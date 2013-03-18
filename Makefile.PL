@@ -23,10 +23,11 @@ my %WriteMakefileArgs = (
     "Catalyst::ClassData" => 0,
     "Catalyst::Plugin::Session::Store" => 0,
     "CouchDB::Client" => 0,
+    "Digest::SHA1" => 0,
     "Moose" => 0,
     "MooseX::Emulate::Class::Accessor::Fast" => 0
   },
-  "VERSION" => "0.01",
+  "VERSION" => "0.02",
   "test" => {
     "TESTS" => "t/*.t"
   }
