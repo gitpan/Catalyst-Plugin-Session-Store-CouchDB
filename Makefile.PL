@@ -20,19 +20,33 @@ my %WriteMakefileArgs = (
   "LICENSE" => "perl",
   "NAME" => "Catalyst::Plugin::Session::Store::CouchDB",
   "PREREQ_PM" => {
+    "AnyEvent::CouchDB" => 0,
     "Catalyst::ClassData" => 0,
     "Catalyst::Plugin::Session::Store" => 0,
-    "CouchDB::Client" => 0,
     "Digest::SHA1" => 0,
     "Moose" => 0,
     "MooseX::Emulate::Class::Accessor::Fast" => 0
   },
-  "VERSION" => "0.02",
+  "TEST_REQUIRES" => {},
+  "VERSION" => "0.03",
   "test" => {
     "TESTS" => "t/*.t"
   }
 );
 
+
+unless ( eval { ExtUtils::MakeMaker->VERSION(6.63_03) } ) {
+  my $tr = delete $WriteMakefileArgs{TEST_REQUIRES};
+  my $br = $WriteMakefileArgs{BUILD_REQUIRES};
+  for my $mod ( keys %$tr ) {
+    if ( exists $br->{$mod} ) {
+      $br->{$mod} = $tr->{$mod} if $tr->{$mod} > $br->{$mod};
+    }
+    else {
+      $br->{$mod} = $tr->{$mod};
+    }
+  }
+}
 
 unless ( eval { ExtUtils::MakeMaker->VERSION(6.56) } ) {
   my $br = delete $WriteMakefileArgs{BUILD_REQUIRES};

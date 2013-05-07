@@ -2,49 +2,53 @@ package Catalyst::Plugin::Session::Store::CouchDB;
 use Moose;
 use MRO::Compat;
 use namespace::autoclean;
-use CouchDB::Client;
+use AnyEvent::CouchDB;
 
-our $VERSION = '0.01';
+our $VERSION = '0.03';
 
 BEGIN {
+	extends 'Catalyst::Plugin::Session::Store';
 	with 'Catalyst::ClassData';
 	with 'MooseX::Emulate::Class::Accessor::Fast';
-	extends 'Catalyst::Plugin::Session::Store';
 }
 
 __PACKAGE__->mk_classdata('_cdbc');
 __PACKAGE__->mk_classdata('_cdb_session_db');
-
-sub _my_config {
-	my ($c) = @_;
-
-	return (
-		$c->can('_session_plugin_config') ?
-			$c->_session_plugin_config
-			: (
-				$c->can('config') ?
-					$c->config->{'Plugin::Session'}
-					: {}
-			)
-	);
-}
+__PACKAGE__->mk_classdata('_cdb_config');
 
 sub setup_session {
 	my ($c) = @_;
 
     $c->maybe::next::method(@_);
 
-    my $uri = ( $c->_my_config->{'uri'} or 'http://localhost:5984' );
-    my $db = ( $c->_my_config->{'database'} or 'app_session' );
-    $c->_cdbc( CouchDB::Client->new( 'uri' => $uri ) );
+	my $config;
+	$config ||= $c->_session_plugin_config if ( $c->can('_session_plugin_config') );
+	$config ||= ( $c->config->{'Plugin::Session'} or $c->config->{'session'} ) if ( $c->can('config') );
+	$config ||= {};
+	$c->_cdb_config($config);
+
+    if ( $c->_cdb_config->{'uri'} and $c->_cdb_config->{'database'} ) {
+    	$c->log->warn('Config parameters "uri" and "database" are deprecated, and will be removed in a future release.');
+    	$c->_cdb_config->{'couch_uri'} = $c->_cdb_config->{'uri'};
+    	$c->_cdb_config->{'couch_database'} = $c->_cdb_config->{'database'};
+    }
+
+    my $uri = ( $c->_cdb_config->{'couch_uri'} or 'http://localhost:5984/' );
+    my $db = ( $c->_cdb_config->{'couch_database'} or 'app_session' );
+    $uri .= '/' unless ( $uri =~ /\/$/ );
+    $c->_cdbc( couch($uri) );
 
 	my $success = eval {
-		$c->_cdbc->testConnection();
+		$c->_cdbc->info->recv;
 	};
 	die 'Cannot connect to CouchDB instance at ' . $uri if ( $@ or not $success );
 
-	my $sdb = $c->_cdbc->newDB($db);
-	$sdb->create() unless ( $c->_cdbc->dbExists($db) );
+	my $sdb = $c->_cdbc->db($db);
+	my $databases = $c->_cdbc->all_dbs()->recv;
+	if ( ( grep { $_ eq $db } @$databases ) == 0 ) {
+		$sdb->create->recv;
+	}
+
     $c->_cdb_session_db($sdb);
 
     return;
@@ -55,9 +59,11 @@ sub get_session_data {
 	my ( $c, $key ) = @_;
 
 	my ( $type, $id ) = split( ':', $key );
-	if ( $c->_cdb_session_db->docExists($id) ) {
-		my $data = $c->_cdb_session_db->newDoc($id)->retrieve->data->{ ( $type eq 'expires' ? 'expires' : 'session_data' ) };
-		return $data;
+	my $session = eval {
+		$c->_cdb_session_db->open_doc($id)->recv;
+	};
+	if ($session) {
+		return $session->{ ( $type eq 'expires' ? 'expires' : 'session_data' ) };
 	}
 	return;
 }
@@ -66,19 +72,18 @@ sub store_session_data {
 	my ( $c, $key, $data ) = @_;
 
 	my ( $type, $id ) = split( ':', $key );
-	my $doc = $c->_cdb_session_db->newDoc($id);
-	if ( $c->_cdb_session_db->docExists($id) ) {
-		$doc->retrieve();
-	} else {
-		$doc->create();
-	}
+	my $session = eval {
+		$c->_cdb_session_db->open_doc($id)->recv;
+	};
+
+	$session = { '_id' => $id } unless ($session);
 
 	if ( $type eq 'expires' ) {
-		$doc->data->{'expires'} = $data;
+		$session->{'expires'} = $data;
 	} elsif ( $type eq 'session') {
-		$doc->data->{'session_data'} = $data;
+		$session->{'session_data'} = $data;
 	}
-	$doc->update();
+	$c->_cdb_session_db->save_doc($session)->recv;
 	return 1;
 }
 
@@ -87,9 +92,10 @@ sub delete_session_data {
 
 	my ( $type, $id ) = split( ':', $key );
 	if ( $type eq 'session' ) {
-		if ( $c->_cdb_session_db->docExists($id) ) {
-			$c->_cdb_session_db->newDoc($id)->retrieve->delete();
-		}
+		eval {
+			my $doc = $c->_cdb_session_db->open_doc($id)->recv;
+			$c->_cdb_session_db->remove_doc($doc)->recv;
+		};
 	}
 	return 1;
 }
@@ -120,8 +126,8 @@ Catalyst::Plugin::Session::Store::CouchDB - Store sessions using CouchDB
 	In your configuration (given values are default):
  
 	<Plugin::Session>
-		url http://localhost:5984
-		database app_session
+		couch_uri http://localhost:5984
+		couch_database app_session
 	</Plugin::Session>
 
 =head1 DESCRIPTION
